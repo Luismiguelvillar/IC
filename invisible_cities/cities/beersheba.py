@@ -229,7 +229,10 @@ def deconvolve_signal(det_db           : pd.DataFrame,
             distribute_energy(deconvolved_hits, hits, energy_type)
             deco_dst.append(deconvolved_hits)
 
-        return pd.concat(deco_dst, ignore_index=True)
+        deco_dst   = pd.concat(deco_dst, ignore_index=True)
+        deco_dst.E = np.round(deco_dst.E, 6)
+
+        return deco_dst
 
     return apply_deconvolution
 
