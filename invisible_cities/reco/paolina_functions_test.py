@@ -131,9 +131,6 @@ def test_voxelize_hits_should_detect_no_hits():
 
 @given(bunch_of_hits)
 def test_bounding_box(hits):
-    if not len(hits): # TODO: deal with empty sequences
-        return
-
     lo, hi = bounding_box(hits)
 
     mins = [float(' inf')] * 3
