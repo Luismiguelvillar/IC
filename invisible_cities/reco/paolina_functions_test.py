@@ -181,6 +181,30 @@ def test_round_hits_positions_in_place(hits):
     assert np.all(np.in1d(pos, [0, 1e-5, -1e-5]))
 
 
+def test_round_hits_positions_in_place_empty_input():
+    """
+    It simply should not crash.
+    """
+    hits = []
+    round_hits_positions_in_place(hits)
+    assert hits == []
+
+
+@settings(max_examples=1) # simple way of producing a single hit
+@given(hit())
+def test_round_hits_positions_in_place_non_finite_values(hit):
+    """
+    Override xyz with np.nan and np.inf, ensure values are not changed.
+    """
+    values = np.nan, np.inf, -np.inf
+    hit.xyz = tuple(values) # ensure copy
+
+    round_hits_positions_in_place([hit])
+
+    assert np.all(np.isclose(hit.pos, values, equal_nan=True))
+
+
+
 random_graph = builds(partial(fast_gnp_random_graph, p=0.5),
                       n=integers(min_value=0, max_value=10),
                       seed=integers())
