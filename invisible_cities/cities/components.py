@@ -1490,6 +1490,7 @@ def track_blob_info_creator_extractor(vox_size         : Tuple[float, float, flo
         df = pd.DataFrame(columns=list(types_dict_tracks.keys()))
         if len(hitc.hits) > max_num_hits:
             return df, hitc, True
+        plf.round_hits_positions_in_place(hitc.hits)
         #track_hits is a new Hitcollection object that contains hits belonging to tracks, and hits that couldnt be corrected
         track_hitc = HitCollection(hitc.event, hitc.time)
         out_of_map = np.any(np.isnan([h.Ep for h in hitc.hits]))
