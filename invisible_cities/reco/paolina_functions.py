@@ -26,6 +26,159 @@ from typing import Dict
 MAX3D = np.array([float(' inf')] * 3)
 MIN3D = np.array([float('-inf')] * 3)
 
+def geodesic_ball(center : Voxel, r : float, dist : Dict) -> Tuple[List, List]:
+    row = dist.get(center, {})
+    voxels = [u for u, d in row.items() if d <= r]
+    dists = [d for u, d in row.items() if d <= r]
+    return (voxels, dists)
+
+def hits_around_blob(track_graph,
+                     radius : float,
+                     extreme: Voxel,
+                     dist: Dict,
+                     zscale : float = 15.55 / 3.97) -> List:
+    blob_pos = np.asarray(extreme.pos, float)
+    r2 = float(radius) * float(radius)
+    dist_from_extreme = dist.get(extreme, {})
+    blob_hits = []
+    for v in track_graph.nodes():
+        d_graph = dist_from_extreme.get(v, np.inf)
+        if d_graph > radius:
+            continue
+        for h in v.hits:
+            p = np.asarray(h.pos, float)
+            dx, dy, dz = p - blob_pos
+            d2 = dx*dx + dy*dy + (zscale*dz)*(zscale*dz)
+            if d2 <= r2:
+                blob_hits.append(h)
+    
+    return blob_hits
+
+def closest_voxel(nodes: List, point : np.ndarray):
+    if not nodes:
+        return None
+    p = np.asarray(point, float)
+    
+    return min(nodes, key=lambda v: np.linalg.norm(np.asarray(v.pos, float) - p))
+
+def barycenter(ball : List,
+               fallback_pos,
+               distances_to_center : List,
+               e_attr : str = "Ec",
+               d0 : float = 45 *units.mm,
+               p : int = 3) -> np.ndarray:
+    
+    if len(ball) != len(distances_to_center):
+        raise ValueError("ball and distances_to_center should have the same length")
+    
+    dist_map = {v: float(d) for v, d in zip(ball, distances_to_center)}
+    
+    P, W = [], []
+    for v in ball:
+        dv = dist_map.get(v, 0.0) # TODO Best to define the distance of the hits instead of the voxel they are from
+        denom = 1.0 + (dv / d0) ** p
+
+        for h in v.hits:
+            e = getattr(h, e_attr, np.nan)
+            if np.isfinite(e) and e > 0:
+                P.append(np.asarray(h.pos, float))
+                W.append(e / denom)
+    
+    if not W or np.sum(W) <= 0:
+        return np.asarray(fallback_pos, float)
+    
+    return np.average(np.vstack(P), weights=np.asarray(W), axis=0)
+
+def hits_energy(hits : List, e_attr : str = "Ec") -> float:
+    vals = [getattr(h, e_attr, np.nan) for h in hits]
+    vals = [x for x in vals if np.isfinite(x) and x >= 0]
+    return float(np.sum(vals)) if vals else 0.0
+
+def find_highest_encapsulating_node(extreme : Voxel,
+                                    track_graph,
+                                    dist : Dict,
+                                    e_attr : str = "Ec",
+                                    small_radius : float = 15.55 * units.mm,
+                                    big_radius : float = 90 * units.mm,
+                                    zscale : float = 15.55 / 3.97) -> Voxel:
+    
+    nodes_within_radius = [node for node in track_graph.nodes if dist[extreme].get(node, np.inf) <= big_radius]
+    if not nodes_within_radius:
+        return extreme
+
+    def energy_within_radius(node :  Voxel) -> float:
+        hits = hits_around_blob(track_graph,
+                                small_radius,
+                                node,
+                                dist,
+                                zscale)
+        
+        return hits_energy(hits, e_attr)
+    
+    return max(nodes_within_radius, key=energy_within_radius)
+
+def blob_center_zaira(track_graph: Graph,
+                      endpoint_voxel: Voxel,
+                      R: float,
+                      dist: Dict = None,
+                      e_attr: str = "Ec",
+                      max_iter: int = 20,
+                      tol: float = 0,
+                      zscale: float = 15.55 / 3.97) -> Tuple[np.ndarray, float, List, List, object]:
+
+    if track_graph.number_of_nodes() == 0 or endpoint_voxel not in track_graph:
+        return np.zeros(3), 0.0, [], [], None
+
+    if dist is None:
+        dist = shortest_paths(track_graph)
+
+    center = find_highest_encapsulating_node(extreme=endpoint_voxel,
+                                             track_graph=track_graph,
+                                             dist=dist,
+                                             big_radius=2 * R,
+                                             small_radius=15.55 * units.mm,
+                                             e_attr=e_attr,
+                                             zscale=1) # OJO AQUI NOTE
+
+    prev = np.asarray(center.pos, float)
+
+    for _ in range(max_iter):
+        ball, distances_to_center = geodesic_ball(center, R, dist)
+        if not ball:
+            break
+
+        bary = barycenter(ball,
+                          fallback_pos=center.pos,
+                          distances_to_center=distances_to_center,
+                          e_attr=e_attr)
+
+        new_center = closest_voxel(ball, bary)
+        if new_center is None:
+            break
+
+        cur = np.asarray(new_center.pos, float)
+        if np.linalg.norm(cur - prev) <= tol:
+            center = new_center
+            break
+
+        center = new_center
+        prev = cur
+
+    ball, distances_to_center = geodesic_ball(center, R, dist)
+    hits_blob = hits_around_blob(track_graph,
+                                 radius=R,
+                                 extreme=center,
+                                 dist=dist,
+                                 zscale=zscale)
+
+    E_blob = hits_energy(hits_blob, e_attr=e_attr)
+    bary_final = barycenter(ball,
+                            fallback_pos=center.pos,
+                            distances_to_center=distances_to_center,
+                            e_attr=e_attr)
+
+    return bary_final, E_blob, ball, hits_blob, center
+    
 def bounding_box(seq : BHit) -> Sequence[np.ndarray]:
     """Returns two arrays defining the coordinates of a box that bounds the voxels"""
     posns = [x.pos for x in seq]
@@ -211,9 +364,11 @@ def blob_centre(voxel: Voxel) -> Tuple[float, float, float]:
 
 def hits_in_blob(track_graph : Graph,
                  radius      : float,
-                 extreme     : Voxel) -> Sequence[BHit]:
+                 extreme     : Voxel,
+                 distances : Dict[Voxel, float] =  None) -> Sequence[BHit]:
     """Returns the hits that belong to a blob."""
-    distances         = shortest_paths(track_graph)
+    if distances is None:
+        distances         = shortest_paths(track_graph)
     dist_from_extreme = distances[extreme]
     blob_pos          = blob_centre(extreme)
     diag              = np.linalg.norm(extreme.size)
@@ -234,26 +389,43 @@ def hits_in_blob(track_graph : Graph,
     return blob_hits
 
 
-def blob_energies_hits_and_centres(track_graph : Graph, radius : float) -> Tuple[float, float, Sequence[BHit], Sequence[BHit], Tuple[float, float, float], Tuple[float, float, float]]:
+def blob_energies_hits_and_centres(track_graph : Graph, radius : float, distances : Dict = None, zscale : float = 15.55 / 3.97) -> Tuple[float, float, Sequence[BHit], Sequence[BHit], Tuple[float, float, float], Tuple[float, float, float]]:
     """Return the energies, the hits and the positions of the blobs.
        For each pair of observables, the one of the blob of largest energy is returned first."""
-    distances = shortest_paths(track_graph)
+    
+    # Only calculate shortest_paths() if needed
+    if distances is None:
+        distances = shortest_paths(track_graph)
+
     a, b, _   = find_extrema_and_length(distances)
-    ha = hits_in_blob(track_graph, radius, a)
-    hb = hits_in_blob(track_graph, radius, b)
 
     voxels = list(track_graph.nodes())
     e_type = voxels[0].Etype
-    Ea = sum(getattr(h, e_type) for h in ha)
-    Eb = sum(getattr(h, e_type) for h in hb)
 
+    ca, Ea, _, ha, center1 = blob_center_zaira(track_graph, a, radius, max_iter=1,e_attr=e_type, dist=distances, zscale=zscale)
+    cb, Eb, _, hb, center2 = blob_center_zaira(track_graph, b, radius, max_iter=1,e_attr=e_type, dist=distances, zscale=zscale)
+
+    if center1 == center2:
+        center1 = find_highest_encapsulating_node(extreme=a, track_graph=track_graph, dist=distances, big_radius=radius, small_radius=15.55*units.mm, zscale=1)
+        center2 = find_highest_encapsulating_node(extreme=b, track_graph=track_graph, dist=distances, big_radius=radius, small_radius=15.55*units.mm, zscale=1)
+        ca = blob_centre(center1)
+        cb = blob_centre(center2)
+        ha = hits_around_blob(track_graph, radius, center1, distances, zscale)
+        hb = hits_around_blob(track_graph, radius, center2, distances, zscale)
+        Ea = sum(getattr(h, e_type) for h in ha)
+        Eb = sum(getattr(h, e_type) for h in hb)
+
+        if center1 == center2:
+            ca = blob_centre(a)
+            cb = blob_centre(b)
+            ha = hits_around_blob(track_graph, radius, a, distances, zscale)
+            hb = hits_around_blob(track_graph, radius, b, distances, zscale)
+            Ea = sum(getattr(h, e_type) for h in ha)
+            Eb = sum(getattr(h, e_type) for h in hb)
     # Consider the case where voxels are built without associated hits
     if len(ha) == 0 and len(hb) == 0 :
         Ea = energy_of_voxels_within_radius(distances[a], radius)
         Eb = energy_of_voxels_within_radius(distances[b], radius)
-
-    ca = blob_centre(a)
-    cb = blob_centre(b)
 
     if Eb > Ea:
         return (Eb, Ea, hb, ha, cb, ca)
