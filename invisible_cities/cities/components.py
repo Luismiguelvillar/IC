@@ -1539,7 +1539,7 @@ def track_blob_info_creator_extractor(vox_size         : Tuple[float, float, flo
                 extr1_pos = extr1.XYZ
                 extr2_pos = extr2.XYZ
 
-                e_blob1, e_blob2, hits_blob1, hits_blob2, blob_pos1, blob_pos2 = plf.blob_energies_hits_and_centres(t, blob_radius)
+                e_blob1, e_blob2, hits_blob1, hits_blob2, blob_pos1, blob_pos2 = plf.blob_energies_hits_and_centres(t, blob_radius, distances, zscale=4)
 
                 overlap = float(sum(h.Ep for h in set(hits_blob1).intersection(set(hits_blob2))))
                 list_of_vars = [hitc.event, tID, energy, length, numb_of_voxels,
