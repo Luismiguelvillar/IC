@@ -1,14 +1,14 @@
 import numpy  as np
 import pandas as pd
+import networkx as nx
 
+from scipy.spatial          import cKDTree
 from scipy.spatial.distance import cdist
-from itertools   import compress
-from copy        import deepcopy
 from typing      import List
 
-from .. evm  import event_model as evm
+from functools import reduce
+
 from .. types.ic_types      import NN
-from .. types.ic_types      import xy
 
 from typing import Optional, Callable, List 
 
@@ -147,15 +147,18 @@ def drop_isolated_sensors(distance  : List[float]=[10., 10.],
     return drop_isolated_sensors
 
 
-def drop_isolated_clusters(distance   :  List[float]= [10., 10., 1.],
-                           nhits      :  int        = 3,
-                           variables  :  List[str  ]= [      ]) -> Callable:
+def drop_isolated_clusters(distance   :  List[float],
+                           nhits      :  int,
+                           variables  :  List[str  ]) -> Callable:
     '''
-    Drops isolated clusters of hits (SiPMs).
+    Drop isolated hits/clusters, where a cluster is defined by the proximity 
+    between hits defined by  distance. A cluster is considered isolated if 
+    the number of hits within the cluster is less than or equal to nhits.
+    The method uses networkx's graph system to identify clusters.
 
     Parameters
     ----------
-    df       : Groupby ('event' and 'npeak') dataframe
+    df : Groupby ('event' and 'npeak') dataframe
 
     Initialisation parameters:
         distance  : Distance to check for other sensors, equal to sensor pitch and z rebinning.
@@ -163,47 +166,36 @@ def drop_isolated_clusters(distance   :  List[float]= [10., 10., 1.],
         variables : List of variables to be redistributed (generally the energies)
     '''
 
-
+   
     def drop_event(df):
-        # normalise distances
-        x = df.X.values / distance[0]
-        y = df.Y.values / distance[1]
-        z = df.Z.values / distance[2]
+        # normalise (x,y,z) array
+        xyz = df[list("XYZ")].values / distance
 
-        xyz = np.column_stack((x, y, z))
-        dr3 = cdist(xyz, xyz)
-        # normalised, so distance square root of the dimensions
-        dist = np.sqrt(3)
-
-        # If there aren't any clusters, return empty df
-        if not np.any(dr3>0):
-            return df.iloc[:0] 
+        # build KDTree of datapoints, collect pairs within normalised distance (sqrt of 3)
+        pairs = cKDTree(xyz).query_pairs(r = np.sqrt(3))
         
-        # create mask for clusters by determining how many hits are within range.
-        closest = np.apply_along_axis(lambda d: len(d[d < dist]), 1, dr3)
-        mask_xyz = closest > nhits
+        # create graph that connects all close pairs between hit positions based on df index
+        cluster_graph = nx.Graph()
+        cluster_graph.add_nodes_from(range(len(df)))
+        cluster_graph.add_edges_from((df.index[i], df.index[j]) for i,j in pairs)
 
-        # expand mask to include neighbors of neighbors etc to avoid removing edges
-        expanded_mask = mask_xyz.copy()
-        for _ in range(len(df)):
-            # find neighbors of currently included hits and combine
-            new_neighbors = np.any(dr3[:, expanded_mask] < dist, axis=1)
-            new_mask = expanded_mask | new_neighbors
-            # if no new neighbors are added break
-            if np.array_equal(new_mask, expanded_mask):
-                break
-            expanded_mask = new_mask
-        mask_xyz = expanded_mask
+        # Find all clusters within the graph
+        clusters = nx.connected_components(cluster_graph)
 
-        pass_df = df.loc[mask_xyz, :].copy()
+        # collect indices of passing hits (cluster > nhit) within set
+        passing_hits = reduce(set.union, filter(lambda x: len(x)>nhits, clusters))
+
+        # apply mask to df to only include passing clusters      
+        pass_df = df.loc[passing_hits, :].copy()
+
         # reweighting
         with np.errstate(divide='ignore'):
             columns = pass_df.loc[:, variables]
-            columns *= np.divide(df.loc[:,variables].sum().values,columns.sum())
+            columns *= np.divide(df.loc[:, variables].sum().values, columns.sum())
             pass_df.loc[:, variables] = columns
 
         return pass_df
-    
+
     return drop_event
 
 def e_from_q(qs: np.ndarray, e: float) -> np.ndarray:
