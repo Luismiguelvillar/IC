@@ -25,7 +25,9 @@ from typing import Dict
 
 MAX3D = np.array([float(' inf')] * 3)
 MIN3D = np.array([float('-inf')] * 3)
-
+ #
+ # #######################################################################################################
+ #  
 def geodesic_ball(center : Voxel, r : float, dist : Dict) -> Tuple[List, List]:
     row = dist.get(center, {})
     voxels = [u for u, d in row.items() if d <= r]
@@ -166,7 +168,7 @@ def blob_center_zaira(track_graph: Graph,
 
     ball, distances_to_center = geodesic_ball(center, R, dist)
     hits_blob = hits_around_blob(track_graph,
-                                 radius=R,
+                                 radius=45*units.mm, # NOTE Quiza sea bueno tocar aqui para agarrar mas energia? NOTE NOTE TODO TODO
                                  extreme=center,
                                  dist=dist,
                                  zscale=zscale)
@@ -178,7 +180,10 @@ def blob_center_zaira(track_graph: Graph,
                             e_attr=e_attr)
 
     return bary_final, E_blob, ball, hits_blob, center
-    
+ #
+ # #######################################################################################################
+ #  
+
 def bounding_box(seq : BHit) -> Sequence[np.ndarray]:
     """Returns two arrays defining the coordinates of a box that bounds the voxels"""
     posns = [x.pos for x in seq]
