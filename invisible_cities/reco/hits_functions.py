@@ -4,11 +4,11 @@ import networkx as nx
 
 from scipy.spatial          import cKDTree
 from scipy.spatial.distance import cdist
-from typing      import List
 
 from functools import reduce
 
 from .. types.ic_types      import NN
+from .. evm.event_model import HitCollection
 
 from typing import Optional, Callable, List 
 
@@ -439,3 +439,84 @@ def threshold_hits(hits: pd.DataFrame, th: float, on_corrected: bool=False) -> p
     if th <= 0: return hits
     return (hits.groupby("Z", as_index=False)
                 .apply(apply_threshold, th=th, on_corrected=on_corrected))
+
+#######################
+# Satelites de Luismi #
+#######################
+
+def drop_hits_satellites_xy_z_variable(hitc : HitCollection,
+                                       e_thr : Optional[float],
+                                       r_iso : float, thr_percentile : int = 40,
+                                       n_neigh_thr : int = 4) -> HitCollection:
+    hits = list(hitc.hits)
+    zscale = 15.55 / 3.97
+
+    if not hits:
+        return hitc
+
+    xs = np.array([h.X for h in hits], float)
+    ys = np.array([h.Y for h in hits], float)
+    zs = np.array([h.Z for h in hits], float)
+    Es = np.array([h.Ep for h in hits], float)
+
+    # e_thr efectivo por evento (percentil)
+    Es_pos = Es[np.isfinite(Es) & (Es > 0)]
+    e_thr_eff = float(np.percentile(Es_pos, thr_percentile)) if Es_pos.size else float(e_thr)
+
+    n = len(hits)
+    alive = np.ones(n, bool)
+    r2 = float(r_iso)**2
+
+    modified = True
+    while modified:
+        modified = False
+        order = np.argsort(Es)
+
+        for idx in order:
+            if not alive[idx]:
+                continue
+
+            dx = xs - xs[idx]
+            dy = ys - ys[idx]
+            dz = zs - zs[idx]
+            dist2 = dx*dx + dy*dy + (zscale*dz)*(zscale*dz)
+
+            neighbour_mask = alive.copy()
+            neighbour_mask[idx] = False
+            neighbours_idx = np.where((dist2 < r2) & neighbour_mask)[0]
+            n_neigh = len(neighbours_idx)
+
+            if n_neigh == 0:
+                # Redistribution of its energy scalating by the energy of the hit receiving
+                alive[idx] = False
+                suma = Es[alive].sum()
+                if suma <= 0:
+                    modified = True
+                    continue
+                Es[alive] += (Es[alive] / suma) * Es[idx]
+                Es[idx] = 0.0
+                modified = True
+                continue
+
+            if Es[idx] >= e_thr_eff:
+                continue
+
+            if n_neigh < n_neigh_thr:
+                suma = Es[neighbours_idx].sum()
+                if suma <= 0:
+                    alive[idx] = False
+                    modified = True
+                    continue
+                Es[neighbours_idx] += (Es[neighbours_idx] / suma) * Es[idx]
+                Es[idx] = 0.0
+                alive[idx] = False
+                modified = True
+
+    for h, E_new in zip(hits, Es):
+        h.Ep = float(E_new)
+
+    filtered_hits = [h for h, keep in zip(hits, alive) if keep]
+
+    hitc = HitCollection(event_number=hitc.event, event_time=-1, hits=filtered_hits)
+
+    return hitc

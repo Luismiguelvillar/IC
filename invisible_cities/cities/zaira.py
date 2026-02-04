@@ -81,7 +81,7 @@ def hitc_to_df_(hitc):
             })
         df = pd.DataFrame.from_records(rows)
 
-    # CAST al schema exacto de /CHITS/highTh
+    # CAST
     df["event"]    = pd.to_numeric(df["event"], errors="coerce").fillna(0).astype(np.int64)
     df["track_id"] = pd.to_numeric(df["track_id"], errors="coerce").fillna(0).astype(np.int64)
     df["npeak"]    = pd.to_numeric(df["npeak"], errors="coerce").fillna(0).astype(np.uint16)
@@ -92,8 +92,6 @@ def hitc_to_df_(hitc):
         df[c] = pd.to_numeric(df[c], errors="coerce").astype(np.float64)
 
     return df
-
-
 
 @city
 def zaira(
@@ -114,15 +112,10 @@ def zaira(
     # mapping functionals
     hitc_to_df = fl.map(hitc_to_df_, item="hits")
     df_to_hitc = fl.map(hitc_from_df, item="hits")
-    correct_hits = fl.map(
-        hits_corrector(**corrections) if corrections is not None else identity,
-        item="hits",
-    )
+    correct_hits = fl.map(hits_corrector(**corrections) if corrections is not None else identity,item="hits")
 
     cut_sensors = fl.map(cut_over_Q(threshold, ["E", "Ec"]), item="hits")
-    drop_sensors = fl.map(
-        drop_isolated(drop_distance, ["E", "Ec"], drop_minimum), item="hits"
-    )
+    drop_sensors = fl.map(drop_isolated(drop_distance, ["E", "Ec"], drop_minimum), item="hits")
 
     # spy components
     event_count_in = fl.spy_count()
@@ -131,10 +124,7 @@ def zaira(
 
     filter_out_none = fl.filter(lambda x: x is not None, args="kdst")
     event_number_collector = collect()
-    collect_evts = "event_number", fl.fork(
-        event_number_collector.sink,
-        event_count_post_topology.sink,
-    )
+    collect_evts = "event_number", fl.fork(event_number_collector.sink,event_count_post_topology.sink)
 
     with tb.open_file(file_out, "w", filters=tbl.filters(compression)) as h5out:
         hits_writer_effect = hits_writer(h5out, group_name="CHITS", table_name="highTh")
@@ -160,6 +150,7 @@ def zaira(
             hits_writer=hits_writer_effect,
         )
 
+        print("Estas usando a tu pana")
         result = push(
             source=hits_and_kdst_from_files(files_in, "RECO", "Events"),
             pipe=pipe(
@@ -168,8 +159,8 @@ def zaira(
                 event_count_in.spy,
                 correct_hits,
                 hitc_to_df,
-                cut_sensors,
-                drop_sensors,
+                #cut_sensors,
+                #drop_sensors,
                 df_to_hitc,              # back to HitCollection for topology
                 event_count_post_cuts.spy,
                 fl.fork(
