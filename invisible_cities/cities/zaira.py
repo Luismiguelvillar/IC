@@ -159,8 +159,8 @@ def zaira(
                 event_count_in.spy,
                 correct_hits,
                 hitc_to_df,
-                #cut_sensors,
-                #drop_sensors,
+                #cut_sensors, # NOTE
+                #drop_sensors, # NOTE
                 df_to_hitc,              # back to HitCollection for topology
                 event_count_post_cuts.spy,
                 fl.fork(
