@@ -2,15 +2,16 @@ import numpy  as np
 import pandas as pd
 import networkx as nx
 
+from numba                  import njit
 from scipy.spatial          import cKDTree
 from scipy.spatial.distance import cdist
 
 from functools import reduce
 
 from .. types.ic_types      import NN
-from .. evm.event_model import HitCollection
+from .. evm.event_model     import HitCollection
 
-from typing import Optional, Callable, List 
+from typing                 import Optional, Callable, List 
 
 EPSILON = np.finfo(np.float64).eps
 
@@ -444,68 +445,171 @@ def threshold_hits(hits: pd.DataFrame, th: float, on_corrected: bool=False) -> p
 # Satelites de Luismi #
 #######################
 
-def drop_hits_satellites_xy_z_variable(hitc, e_thr, r_iso, thr_percentile=40, n_neigh_thr=4):
+@njit(cache=True)
+def _drop_hits_numba(Es, indptr, indices, e_thr_eff, n_neigh_thr,
+                     redistribute_all, redistribute_weighted :  bool = False):
+    n = Es.size
+    alive = np.ones(n, dtype=np.bool_)
+
+    modified = True
+    while modified:
+        modified = False
+
+        # Recorremos "en orden creciente de energía" sin argsort:
+        # repetimos n veces buscando el mínimo vivo no procesado
+        processed = np.zeros(n, dtype=np.bool_)
+
+        for _ in range(n):
+            # buscar idx mínimo vivo y no procesado con Es>0 (o >=0 si quieres)
+            idx = -1
+            Emin = 1e308
+            for i in range(n):
+                if alive[i] and (not processed[i]):
+                    Ei = Es[i]
+                    if Ei < Emin:
+                        Emin = Ei
+                        idx = i
+
+            if idx == -1:
+                break  # no queda nada por procesar
+
+            processed[idx] = True
+
+            # vecinos CSR
+            start = indptr[idx]
+            end   = indptr[idx + 1]
+
+            # contar vecinos vivos
+            n_neigh = 0
+            for kk in range(start, end):
+                j = indices[kk]
+                if alive[j]:
+                    n_neigh += 1
+
+            # caso 1: aislado -> elimina y reparte
+            if n_neigh == 0:
+                Ei = Es[idx]
+                alive[idx] = False
+                Es[idx] = 0.0
+
+                if redistribute_all:
+                    if redistribute_weighted:
+                        # suma energía viva actual (sin idx)
+                        suma = 0.0
+                        for j in range(n):
+                            if alive[j]:
+                                suma += Es[j]
+
+                        if suma > 0.0 and Ei != 0.0:
+                            for j in range(n):
+                                if alive[j]:
+                                    Ej = Es[j]
+                                    Es[j] = Ej + (Ej / suma) * Ei
+                    else:
+                        # reparto equitativo entre vivos
+                        n_alive = 0
+                        for j in range(n):
+                            if alive[j]:
+                                n_alive += 1
+                        if n_alive > 0 and Ei != 0.0:
+                            share = Ei / n_alive
+                            for j in range(n):
+                                if alive[j]:
+                                    Es[j] += share
+
+                modified = True
+                continue
+
+            # caso 2: energía sobre umbral -> no tocar
+            if Es[idx] >= e_thr_eff:
+                continue
+
+            # caso 3: pocos vecinos -> elimina y reparte a TODOS los vivos
+            if n_neigh < n_neigh_thr:
+                Ei = Es[idx]
+                alive[idx] = False
+                Es[idx] = 0.0
+
+                if redistribute_all:
+                    if redistribute_weighted:
+                        # suma energía viva actual (sin idx)
+                        suma = 0.0
+                        for j in range(n):
+                            if alive[j]:
+                                suma += Es[j]
+
+                        if suma > 0.0 and Ei != 0.0:
+                            for j in range(n):
+                                if alive[j]:
+                                    Ej = Es[j]
+                                    Es[j] = Ej + (Ej / suma) * Ei
+                    else:
+                        # reparto equitativo entre vivos
+                        n_alive = 0
+                        for j in range(n):
+                            if alive[j]:
+                                n_alive += 1
+                        if n_alive > 0 and Ei != 0.0:
+                            share = Ei / n_alive
+                            for j in range(n):
+                                if alive[j]:
+                                    Es[j] += share
+
+                modified = True
+
+    return alive, Es
+
+
+def drop_hits_satellites_xy_z_variable(hitc, e_thr, r_iso, thr_percentile=40, n_neigh_thr=4,
+                                       redistribute_all=True,
+                                       redistribute_weighted=False):
     hits = list(hitc.hits)
     zscale = 15.55 / 3.97
     if not hits:
         return hitc
 
-    xs = np.fromiter((h.X  for h in hits), dtype=np.float64, count=len(hits))
-    ys = np.fromiter((h.Y  for h in hits), dtype=np.float64, count=len(hits))
-    zs = np.fromiter((h.Z  for h in hits), dtype=np.float64, count=len(hits))
-    Es = np.fromiter((h.Ep for h in hits), dtype=np.float64, count=len(hits))
+    n = len(hits)
+    xs = np.fromiter((h.X  for h in hits), dtype=np.float64, count=n)
+    ys = np.fromiter((h.Y  for h in hits), dtype=np.float64, count=n)
+    zs = np.fromiter((h.Z  for h in hits), dtype=np.float64, count=n)
+    Es = np.fromiter((h.Ep for h in hits), dtype=np.float64, count=n)
 
     Es_pos = Es[np.isfinite(Es) & (Es > 0)]
     e_thr_eff = float(np.percentile(Es_pos, thr_percentile)) if Es_pos.size else float(e_thr)
 
-    n = len(hits)
-    alive = np.ones(n, dtype=bool)
-
-    # KDTree en (x, y, z') con z' = zscale*z
-    P = np.column_stack((xs, ys, zscale*zs))
+    # KDTree + vecinos
+    P = np.column_stack((xs, ys, zscale * zs))
     tree = cKDTree(P)
-    neigh_lists = tree.query_ball_point(P, r_iso)  # lista de listas
+    neigh_lists = tree.query_ball_point(P, r_iso)
 
-    modified = True
-    while modified:
-        modified = False
-        order = np.argsort(Es)
+    # Convertir vecinos a CSR (Compressed Sparse Row):
+    # indices[indptr[i]:indptr[i+1]] devuelve los vecinos del hit i
+    indptr = np.zeros(n + 1, dtype=np.int64)
+    total = 0
+    for i in range(n):
+        li = neigh_lists[i]
+        # quitar self si está (normalmente sí)
+        cnt = len(li) - (1 if i in li else 0)
+        if cnt < 0:
+            cnt = 0
+        total += cnt
+        indptr[i + 1] = total
 
-        for idx in order:
-            if not alive[idx]:
+    indices = np.empty(total, dtype=np.int32)
+    k = 0
+    for i in range(n):
+        for j in neigh_lists[i]:
+            if j == i:
                 continue
+            indices[k] = j
+            k += 1
 
-            neigh = neigh_lists[idx]
-            if neigh:
-                neigh = np.asarray(neigh, dtype=np.int32)
-                # quitarse a sí mismo y filtrar vivos
-                neigh = neigh[(neigh != idx) & alive[neigh]]
-            else:
-                neigh = np.empty(0, dtype=np.int32)
+    # Numba core
+    alive, Es_out = _drop_hits_numba(Es.copy(), indptr, indices, e_thr_eff, n_neigh_thr,
+                                     redistribute_all, redistribute_weighted)
 
-            n_neigh = neigh.size
-
-            if n_neigh == 0:
-                alive[idx] = False
-                suma = Es[alive].sum()
-                if suma > 0:
-                    Es[alive] += (Es[alive] / suma) * Es[idx]
-                Es[idx] = 0.0
-                modified = True
-                continue
-
-            if Es[idx] >= e_thr_eff:
-                continue
-
-            if n_neigh < n_neigh_thr:
-                suma = Es[neigh].sum()
-                alive[idx] = False
-                if suma > 0:
-                    Es[neigh] += (Es[neigh] / suma) * Es[idx]
-                Es[idx] = 0.0
-                modified = True
-
-    for h, E_new in zip(hits, Es):
+    # escribir energías de vuelta a objetos
+    for h, E_new in zip(hits, Es_out):
         h.Ep = float(E_new)
 
     filtered_hits = [h for h, keep in zip(hits, alive) if keep]

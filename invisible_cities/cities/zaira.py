@@ -26,14 +26,18 @@ from .components import hits_corrector
 from .components import hits_thresholder
 from .components import hits_and_kdst_from_files
 from .components import compute_and_write_tracks_info
+from .components import Efield_copier
 from .components import identity
 
 from ..types.symbols import HitEnergy
 
 from ..core.configure import EventRangeType
 from ..core.configure import OneOrManyFiles
+from ..core import system_of_units as units
 from ..core import tbl_functions as tbl
 from ..evm import event_model as evm
+from ..evm.nh5 import KrTable
+from ..evm.nh5 import HitsTable
 from ..dataflow import dataflow as fl
 
 from ..dataflow.dataflow import push
@@ -41,6 +45,7 @@ from ..dataflow.dataflow import pipe
 
 from ..reco.hits_functions import cut_over_Q
 from ..reco.hits_functions import drop_isolated
+from ..reco.hits_functions import drop_hits_satellites_xy_z_variable
 
 from ..io.run_and_event_io import run_and_event_writer
 from ..io.hits_io import hits_writer
@@ -81,16 +86,19 @@ def hitc_to_df_(hitc):
             })
         df = pd.DataFrame.from_records(rows)
 
-    # CAST
-    df["event"]    = pd.to_numeric(df["event"], errors="coerce").fillna(0).astype(np.int64)
-    df["track_id"] = pd.to_numeric(df["track_id"], errors="coerce").fillna(0).astype(np.int64)
-    df["npeak"]    = pd.to_numeric(df["npeak"], errors="coerce").fillna(0).astype(np.uint16)
-    df["nsipm"]    = pd.to_numeric(df["nsipm"], errors="coerce").fillna(0).astype(np.uint16)
+    # CAST to HitsTable schema (robustly force exact dtypes)
+    hits_dtype = tb.dtype_from_descr(HitsTable)
+    for name in hits_dtype.names:
+        if name not in df.columns:
+            continue
+        col = pd.to_numeric(df[name], errors="coerce")
+        if np.issubdtype(hits_dtype[name], np.integer):
+            df[name] = col.fillna(0).astype(hits_dtype[name])
+        else:
+            df[name] = col.astype(hits_dtype[name])
 
-    float_cols = ["time","Xpeak","Ypeak","X","Y","Xrms","Yrms","Z","Q","E","Qc","Ec","Ep"]
-    for c in float_cols:
-        df[c] = pd.to_numeric(df[c], errors="coerce").astype(np.float64)
-
+    df = df[list(hits_dtype.names)]
+    df = pd.DataFrame.from_records(df.to_records(index=False).astype(hits_dtype))
     return df
 
 @city
@@ -116,6 +124,17 @@ def zaira(
 
     cut_sensors = fl.map(cut_over_Q(threshold, ["E", "Ec"]), item="hits")
     drop_sensors = fl.map(drop_isolated(drop_distance, ["E", "Ec"], drop_minimum), item="hits")
+    copy_ep = fl.map(Efield_copier(HitEnergy.Ec), item="hits")
+    drop_satellites = fl.map(
+        lambda h: drop_hits_satellites_xy_z_variable(
+            h,
+            e_thr= 1 * units.pes,
+            r_iso=15.55 * units.mm,
+            thr_percentile=10,
+            n_neigh_thr=5,
+        ),
+        item="hits",
+    )
 
     # spy components
     event_count_in = fl.spy_count()
@@ -123,11 +142,31 @@ def zaira(
     event_count_post_topology = fl.count()
 
     filter_out_none = fl.filter(lambda x: x is not None, args="kdst")
+    kr_dtype = tb.dtype_from_descr(KrTable)
+    def _coerce_kdst_types(df: pd.DataFrame) -> pd.DataFrame:
+        out = df.copy()
+        for name in kr_dtype.names:
+            if name not in out.columns:
+                continue
+            col = pd.to_numeric(out[name], errors="coerce")
+            if np.issubdtype(kr_dtype[name], np.integer):
+                out[name] = col.fillna(0).astype(kr_dtype[name])
+            else:
+                out[name] = col.astype(kr_dtype[name])
+        return out[list(kr_dtype.names)]
+
+    coerce_kdst_types = fl.map(_coerce_kdst_types, item="kdst")
     event_number_collector = collect()
     collect_evts = "event_number", fl.fork(event_number_collector.sink,event_count_post_topology.sink)
 
     with tb.open_file(file_out, "w", filters=tbl.filters(compression)) as h5out:
-        hits_writer_effect = hits_writer(h5out, group_name="CHITS", table_name="highTh")
+        hits_dtype = tb.dtype_from_descr(HitsTable)
+        _hits_writer = hits_writer(h5out, group_name="CHITS", table_name="highTh")
+        def hits_writer_effect(hits_df):
+            # Ensure consistent dtypes for table creation and subsequent appends
+            arr = hits_df.to_records(index=False).astype(hits_dtype)
+            hits_df = pd.DataFrame.from_records(arr)
+            return _hits_writer(hits_df)
 
         write_event_info = fl.sink(
             run_and_event_writer(h5out),
@@ -140,7 +179,15 @@ def zaira(
             fl.sink(hits_writer_effect, args="hits"),
         )
 
-        write_kdst_table = fl.sink(kdst_from_df_writer(h5out), args="kdst")
+        _kdst_writer = kdst_from_df_writer(h5out)
+        def kdst_writer_effect(kdst_df):
+            if not hasattr(kdst_writer_effect, "_printed"):
+                kdst_writer_effect._printed = True
+                if "DST" in h5out.root and "Events" in h5out.root.DST:
+                    print("DST/Events table dtype:", h5out.root.DST.Events.dtype)
+                print("DST/Events df dtypes:", kdst_df.dtypes.to_dict())
+            return _kdst_writer(kdst_df)
+        write_kdst_table = fl.sink(kdst_writer_effect, args="kdst")
 
         compute_tracks = compute_and_write_tracks_info(
             paolina_params,
@@ -150,7 +197,6 @@ def zaira(
             hits_writer=hits_writer_effect,
         )
 
-        print("Estas usando a tu pana")
         result = push(
             source=hits_and_kdst_from_files(files_in, "RECO", "Events"),
             pipe=pipe(
@@ -162,11 +208,13 @@ def zaira(
                 #cut_sensors, # NOTE
                 #drop_sensors, # NOTE
                 df_to_hitc,              # back to HitCollection for topology
+                copy_ep,
+                drop_satellites, # NOTE este es el mio!
                 event_count_post_cuts.spy,
                 fl.fork(
                     compute_tracks,                     # needs HitCollection
                     write_hits_df,                      # converts to DF only for writing
-                    (filter_out_none, write_kdst_table),
+                    (filter_out_none, coerce_kdst_types, write_kdst_table),
                     write_event_info,
                     collect_evts,
                 ),

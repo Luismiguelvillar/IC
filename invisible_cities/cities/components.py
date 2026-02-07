@@ -1502,7 +1502,7 @@ def track_blob_info_creator_extractor(vox_size         : Tuple[float, float, flo
             hitc      = HitCollection(hitc.event, hitc.time)
             hitc.hits = hits_without_nan
 
-        hitc = hif.drop_hits_satellites_xy_z_variable(hitc, r_iso=15.55*units.m, e_thr=0.01, thr_percentile=75) # NOTE how the pitch in plane xy is the r_iso
+        #hitc = hif.drop_hits_satellites_xy_z_variable(hitc, r_iso=15.55*units.m, e_thr=0.01, thr_percentile=75) # NOTE how the pitch in plane xy is the r_iso
 
         hit_energies = np.array([getattr(h, HitEnergy.Ep.value) for h in hitc.hits])
 
