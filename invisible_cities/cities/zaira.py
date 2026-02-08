@@ -46,6 +46,7 @@ from ..dataflow.dataflow import pipe
 from ..reco.hits_functions import cut_over_Q
 from ..reco.hits_functions import drop_isolated
 from ..reco.hits_functions import drop_hits_satellites_xy_z_variable
+from ..reco.hits_functions import drop_satellite_clusters
 
 from ..io.run_and_event_io import run_and_event_writer
 from ..io.hits_io import hits_writer
@@ -125,17 +126,28 @@ def zaira(
     cut_sensors = fl.map(cut_over_Q(threshold, ["E", "Ec"]), item="hits")
     drop_sensors = fl.map(drop_isolated(drop_distance, ["E", "Ec"], drop_minimum), item="hits")
     copy_ep = fl.map(Efield_copier(HitEnergy.Ec), item="hits")
-    drop_satellites = fl.map(
-        lambda h: drop_hits_satellites_xy_z_variable(
+    """drop_satellites = fl.map(
+        lambda h: drop_satellite_clusters(
             h,
-            e_thr= 1 * units.pes,
-            r_iso=15.55 * units.mm,
-            thr_percentile=10,
-            n_neigh_thr=5,
+            r_iso=22 * units.mm,
+            method="top_n",
+            keep_top_n=2,
+            frac_min=0.0,
+            n_hits_min=5,
+            e_min=0.0,
+            redistribute_all=True,
+            redistribute_weighted=True,
         ),
         item="hits",
-    )
-
+    )"""
+    drop_satellites = fl.map(lambda h: drop_hits_satellites_xy_z_variable(h,
+                                                                           5*units.pes,
+                                                                             22*units.mm,
+                                                                               thr_percentile=40,
+                                                                                 n_neigh_thr=5,
+                                                                                   redistribute_weighted=True,
+                                                                                     redistribute_all=True), item='hits')
+    
     # spy components
     event_count_in = fl.spy_count()
     event_count_post_cuts = fl.spy_count()

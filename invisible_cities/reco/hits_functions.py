@@ -614,3 +614,95 @@ def drop_hits_satellites_xy_z_variable(hitc, e_thr, r_iso, thr_percentile=40, n_
 
     filtered_hits = [h for h, keep in zip(hits, alive) if keep]
     return HitCollection(event_number=hitc.event, event_time=-1, hits=filtered_hits)
+
+
+def drop_satellite_clusters(hitc, r_iso, *,
+                            method="top_n",
+                            keep_top_n=1,
+                            frac_min=0.05,
+                            n_hits_min=3,
+                            e_min=0.0,
+                            zscale=15.55 / 3.97,
+                            redistribute_all=True,
+                            redistribute_weighted=True):
+    """
+    Drops satellite clusters based on connected components in XYZ.
+
+    method:
+      - "top_n": keep the N most energetic clusters
+      - "frac":  keep clusters with E_cluster / E_total >= frac_min
+      - "hybrid": keep clusters that satisfy either rule
+    """
+    hits = list(hitc.hits)
+    if not hits:
+        return hitc
+
+    n = len(hits)
+    xs = np.fromiter((h.X for h in hits), dtype=np.float64, count=n)
+    ys = np.fromiter((h.Y for h in hits), dtype=np.float64, count=n)
+    zs = np.fromiter((h.Z for h in hits), dtype=np.float64, count=n)
+    Es = np.fromiter((h.Ep for h in hits), dtype=np.float64, count=n)
+
+    P = np.column_stack((xs, ys, zscale * zs))
+    tree = cKDTree(P)
+    pairs = tree.query_pairs(r_iso)
+
+    g = nx.Graph()
+    g.add_nodes_from(range(n))
+    g.add_edges_from(pairs)
+    components = list(nx.connected_components(g))
+
+    # Compute cluster energies and sizes
+    cluster_info = []
+    for comp in components:
+        idx = np.fromiter(comp, dtype=np.int64)
+        e_sum = float(np.nansum(Es[idx]))
+        cluster_info.append((comp, e_sum, len(comp)))
+
+    total_e = float(np.nansum(Es))
+    if total_e <= 0:
+        return HitCollection(event_number=hitc.event, event_time=-1, hits=[])
+
+    # Determine principal clusters
+    keep = set()
+    if method in ("top_n", "hybrid"):
+        top = sorted(cluster_info, key=lambda x: x[1], reverse=True)
+        for comp, e_sum, _ in top[:max(0, keep_top_n)]:
+            keep |= set(comp)
+
+    if method in ("frac", "hybrid"):
+        for comp, e_sum, n_hits in cluster_info:
+            if e_sum / total_e >= frac_min and n_hits >= n_hits_min and e_sum >= e_min:
+                keep |= set(comp)
+
+    # Apply n_hits_min / e_min filter to all kept clusters
+    if keep:
+        keep_filtered = set()
+        for comp, e_sum, n_hits in cluster_info:
+            if comp & keep and n_hits >= n_hits_min and e_sum >= e_min:
+                keep_filtered |= set(comp)
+        keep = keep_filtered
+
+    if not keep:
+        return HitCollection(event_number=hitc.event, event_time=-1, hits=[])
+
+    # Redistribute removed energy to kept hits
+    if redistribute_all:
+        removed = [i for i in range(n) if i not in keep]
+        e_removed = float(np.nansum(Es[removed])) if removed else 0.0
+        if e_removed != 0.0:
+            kept = np.array(sorted(keep), dtype=np.int64)
+            if redistribute_weighted:
+                weights = Es[kept].copy()
+                wsum = float(np.nansum(weights))
+                if wsum > 0:
+                    Es[kept] = Es[kept] + (weights / wsum) * e_removed
+            else:
+                share = e_removed / len(kept)
+                Es[kept] = Es[kept] + share
+
+    # Write back Ep and filter
+    for i, h in enumerate(hits):
+        h.Ep = float(Es[i])
+    filtered_hits = [h for i, h in enumerate(hits) if i in keep]
+    return HitCollection(event_number=hitc.event, event_time=-1, hits=filtered_hits)
