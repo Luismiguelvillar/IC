@@ -125,28 +125,25 @@ def zaira(
 
     cut_sensors = fl.map(cut_over_Q(threshold, ["E", "Ec"]), item="hits")
     drop_sensors = fl.map(drop_isolated(drop_distance, ["E", "Ec"], drop_minimum), item="hits")
+
     copy_ep = fl.map(Efield_copier(HitEnergy.Ec), item="hits")
-    """drop_satellites = fl.map(
-        lambda h: drop_satellite_clusters(
-            h,
-            r_iso=22 * units.mm,
-            method="top_n",
-            keep_top_n=2,
-            frac_min=0.0,
-            n_hits_min=5,
-            e_min=0.0,
-            redistribute_all=True,
-            redistribute_weighted=True,
-        ),
-        item="hits",
-    )"""
+    drop_satellites_cluster = fl.map(lambda h: drop_satellite_clusters(h,
+                                                                        r_iso=22 * units.mm,
+                                                                        method="top_n",
+                                                                        keep_top_n=2,
+                                                                        frac_min=0.0,
+                                                                        n_hits_min=5,
+                                                                        e_min=0.0,
+                                                                        redistribute_all=True,
+                                                                        redistribute_weighted=True,),item="hits")
+    
     drop_satellites = fl.map(lambda h: drop_hits_satellites_xy_z_variable(h,
-                                                                           5*units.pes,
-                                                                             22*units.mm,
-                                                                               thr_percentile=40,
-                                                                                 n_neigh_thr=5,
-                                                                                   redistribute_weighted=True,
-                                                                                     redistribute_all=True), item='hits')
+                                                                        5*units.pes,
+                                                                        22*units.mm,
+                                                                        thr_percentile=40,
+                                                                        n_neigh_thr=5,
+                                                                        redistribute_weighted=True,
+                                                                        redistribute_all=True), item='hits')
     
     # spy components
     event_count_in = fl.spy_count()
@@ -221,6 +218,7 @@ def zaira(
                 #drop_sensors, # NOTE
                 df_to_hitc,              # back to HitCollection for topology
                 copy_ep,
+                drop_satellites_cluster,
                 drop_satellites, # NOTE este es el mio!
                 event_count_post_cuts.spy,
                 fl.fork(

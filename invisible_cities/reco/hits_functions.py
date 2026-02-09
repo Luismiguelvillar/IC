@@ -573,6 +573,9 @@ def drop_hits_satellites_xy_z_variable(hitc, e_thr, r_iso, thr_percentile=40, n_
     ys = np.fromiter((h.Y  for h in hits), dtype=np.float64, count=n)
     zs = np.fromiter((h.Z  for h in hits), dtype=np.float64, count=n)
     Es = np.fromiter((h.Ep for h in hits), dtype=np.float64, count=n)
+    # Replace non-finite energies to avoid NaN propagation in the Numba loop.
+    Es = np.where(np.isfinite(Es), Es, 0.0)
+    total_energy = float(np.sum(Es))
 
     Es_pos = Es[np.isfinite(Es) & (Es > 0)]
     e_thr_eff = float(np.percentile(Es_pos, thr_percentile)) if Es_pos.size else float(e_thr)
@@ -608,6 +611,13 @@ def drop_hits_satellites_xy_z_variable(hitc, e_thr, r_iso, thr_percentile=40, n_
     alive, Es_out = _drop_hits_numba(Es.copy(), indptr, indices, e_thr_eff, n_neigh_thr,
                                      redistribute_all, redistribute_weighted)
 
+    # If redistribution is enabled, enforce energy conservation across remaining hits.
+    if redistribute_all and total_energy > 0.0:
+        sum_alive = float(np.sum(Es_out[alive]))
+        if sum_alive > 0.0:
+            scale = total_energy / sum_alive
+            Es_out[alive] *= scale
+
     # escribir energías de vuelta a objetos
     for h, E_new in zip(hits, Es_out):
         h.Ep = float(E_new)
@@ -641,7 +651,7 @@ def drop_satellite_clusters(hitc, r_iso, *,
     xs = np.fromiter((h.X for h in hits), dtype=np.float64, count=n)
     ys = np.fromiter((h.Y for h in hits), dtype=np.float64, count=n)
     zs = np.fromiter((h.Z for h in hits), dtype=np.float64, count=n)
-    Es = np.fromiter((h.Ep for h in hits), dtype=np.float64, count=n)
+    Es = np.fromiter((h.Ec for h in hits), dtype=np.float64, count=n)
 
     P = np.column_stack((xs, ys, zscale * zs))
     tree = cKDTree(P)
@@ -703,6 +713,6 @@ def drop_satellite_clusters(hitc, r_iso, *,
 
     # Write back Ep and filter
     for i, h in enumerate(hits):
-        h.Ep = float(Es[i])
+        h.Ec = float(Es[i])
     filtered_hits = [h for i, h in enumerate(hits) if i in keep]
     return HitCollection(event_number=hitc.event, event_time=-1, hits=filtered_hits)
