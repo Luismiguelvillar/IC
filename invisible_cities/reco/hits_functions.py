@@ -651,7 +651,7 @@ def drop_satellite_clusters(hitc, r_iso, *,
     xs = np.fromiter((h.X for h in hits), dtype=np.float64, count=n)
     ys = np.fromiter((h.Y for h in hits), dtype=np.float64, count=n)
     zs = np.fromiter((h.Z for h in hits), dtype=np.float64, count=n)
-    Es = np.fromiter((h.Ec for h in hits), dtype=np.float64, count=n)
+    Es = np.fromiter((h.Ep for h in hits), dtype=np.float64, count=n)
 
     P = np.column_stack((xs, ys, zscale * zs))
     tree = cKDTree(P)
@@ -713,6 +713,6 @@ def drop_satellite_clusters(hitc, r_iso, *,
 
     # Write back Ep and filter
     for i, h in enumerate(hits):
-        h.Ec = float(Es[i])
+        h.Ep = float(Es[i])
     filtered_hits = [h for i, h in enumerate(hits) if i in keep]
     return HitCollection(event_number=hitc.event, event_time=-1, hits=filtered_hits)

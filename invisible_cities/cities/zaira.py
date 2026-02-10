@@ -129,11 +129,11 @@ def zaira(
     copy_ep = fl.map(Efield_copier(HitEnergy.Ec), item="hits")
     drop_satellites_cluster = fl.map(lambda h: drop_satellite_clusters(h,
                                                                         r_iso=22 * units.mm,
-                                                                        method="top_n",
-                                                                        keep_top_n=2,
-                                                                        frac_min=0.0,
+                                                                        method="frac",
+                                                                        keep_top_n=3,
+                                                                        frac_min=0.1,
                                                                         n_hits_min=5,
-                                                                        e_min=0.0,
+                                                                        e_min=0.05,
                                                                         redistribute_all=True,
                                                                         redistribute_weighted=True,),item="hits")
     
