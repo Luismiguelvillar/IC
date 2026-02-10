@@ -562,7 +562,9 @@ def _drop_hits_numba(Es, indptr, indices, e_thr_eff, n_neigh_thr,
 
 def drop_hits_satellites_xy_z_variable(hitc, e_thr, r_iso, thr_percentile=40, n_neigh_thr=4,
                                        redistribute_all=True,
-                                       redistribute_weighted=False):
+                                       redistribute_weighted=False,
+                                       redistribute_to_nearest_cluster=False,
+                                       clusters=None):
     hits = list(hitc.hits)
     zscale = 15.55 / 3.97
     if not hits:
@@ -608,8 +610,58 @@ def drop_hits_satellites_xy_z_variable(hitc, e_thr, r_iso, thr_percentile=40, n_
             k += 1
 
     # Numba core
-    alive, Es_out = _drop_hits_numba(Es.copy(), indptr, indices, e_thr_eff, n_neigh_thr,
-                                     redistribute_all, redistribute_weighted)
+    redistribute_in_numba = redistribute_all and (not redistribute_to_nearest_cluster)
+    Es_in = Es.copy()
+    alive, Es_out = _drop_hits_numba(Es_in.copy(), indptr, indices, e_thr_eff, n_neigh_thr,
+                                     redistribute_in_numba, redistribute_weighted)
+
+    # Optional: redistribute removed energy within the original cluster
+    if redistribute_all and redistribute_to_nearest_cluster:
+        if clusters is None:
+            clusters = getattr(hitc, "satellite_clusters", None)
+        if clusters is None:
+            pairs = tree.query_pairs(r_iso)
+            g = nx.Graph()
+            g.add_nodes_from(range(n))
+            g.add_edges_from(pairs)
+            clusters = list(nx.connected_components(g))
+
+        cluster_id = np.full(n, -1, dtype=np.int64)
+        cluster_members = []
+        for cid, comp in enumerate(clusters):
+            idx = np.fromiter(comp, dtype=np.int64)
+            cluster_id[idx] = cid
+            cluster_members.append(idx)
+
+        cluster_alive_members = []
+        for members in cluster_members:
+            if members.size == 0:
+                cluster_alive_members.append(members)
+            else:
+                cluster_alive_members.append(members[alive[members]])
+
+        removed_idx = np.where(~alive)[0]
+        for i in removed_idx:
+            Ei = float(Es_in[i])
+            if Ei == 0.0:
+                continue
+            cid = cluster_id[i]
+            if cid < 0:
+                continue
+            members = cluster_alive_members[cid]
+            if members.size == 0:
+                continue
+            if redistribute_weighted:
+                weights = Es_out[members].copy()
+                wsum = float(np.nansum(weights))
+                if wsum > 0.0:
+                    Es_out[members] = Es_out[members] + (weights / wsum) * Ei
+                else:
+                    share = Ei / members.size
+                    Es_out[members] = Es_out[members] + share
+            else:
+                share = Ei / members.size
+                Es_out[members] = Es_out[members] + share
 
     # If redistribution is enabled, enforce energy conservation across remaining hits.
     if redistribute_all and total_energy > 0.0:
@@ -634,7 +686,8 @@ def drop_satellite_clusters(hitc, r_iso, *,
                             e_min=0.0,
                             zscale=15.55 / 3.97,
                             redistribute_all=True,
-                            redistribute_weighted=True):
+                            redistribute_weighted=True,
+                            attach_clusters=False):
     """
     Drops satellite clusters based on connected components in XYZ.
 
@@ -642,6 +695,7 @@ def drop_satellite_clusters(hitc, r_iso, *,
       - "top_n": keep the N most energetic clusters
       - "frac":  keep clusters with E_cluster / E_total >= frac_min
       - "hybrid": keep clusters that satisfy either rule
+
     """
     hits = list(hitc.hits)
     if not hits:
@@ -652,6 +706,8 @@ def drop_satellite_clusters(hitc, r_iso, *,
     ys = np.fromiter((h.Y for h in hits), dtype=np.float64, count=n)
     zs = np.fromiter((h.Z for h in hits), dtype=np.float64, count=n)
     Es = np.fromiter((h.Ep for h in hits), dtype=np.float64, count=n)
+    # Replace non-finite energies to avoid NaN propagation in redistribution.
+    Es = np.where(np.isfinite(Es), Es, 0.0)
 
     P = np.column_stack((xs, ys, zscale * zs))
     tree = cKDTree(P)
@@ -705,6 +761,12 @@ def drop_satellite_clusters(hitc, r_iso, *,
             if redistribute_weighted:
                 weights = Es[kept].copy()
                 wsum = float(np.nansum(weights))
+                """print("drop_satellite_clusters debug:",
+                      "keep_size", len(keep),
+                      "e_removed", e_removed,
+                      "wsum", wsum,
+                      "min_kept", float(np.min(weights)) if weights.size else None,
+                      "max_kept", float(np.max(weights)) if weights.size else None)"""
                 if wsum > 0:
                     Es[kept] = Es[kept] + (weights / wsum) * e_removed
             else:
@@ -715,4 +777,19 @@ def drop_satellite_clusters(hitc, r_iso, *,
     for i, h in enumerate(hits):
         h.Ep = float(Es[i])
     filtered_hits = [h for i, h in enumerate(hits) if i in keep]
-    return HitCollection(event_number=hitc.event, event_time=-1, hits=filtered_hits)
+    out = HitCollection(event_number=hitc.event, event_time=-1, hits=filtered_hits)
+
+    if attach_clusters and keep:
+        kept_components = []
+        for comp, _, _ in cluster_info:
+            if comp <= keep:
+                kept_components.append(comp)
+        kept_sorted = sorted(keep)
+        index_map = {old: new for new, old in enumerate(kept_sorted)}
+        clusters_out = []
+        for comp in kept_components:
+            comp_sorted = sorted(comp)
+            clusters_out.append([index_map[i] for i in comp_sorted])
+        out.satellite_clusters = clusters_out
+    
+    return out

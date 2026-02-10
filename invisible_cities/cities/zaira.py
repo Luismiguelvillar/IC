@@ -129,13 +129,14 @@ def zaira(
     copy_ep = fl.map(Efield_copier(HitEnergy.Ec), item="hits")
     drop_satellites_cluster = fl.map(lambda h: drop_satellite_clusters(h,
                                                                         r_iso=22 * units.mm,
-                                                                        method="frac",
-                                                                        keep_top_n=3,
-                                                                        frac_min=0.1,
+                                                                        method="top_n",
+                                                                        keep_top_n=100,
+                                                                        frac_min=0.00,
                                                                         n_hits_min=5,
-                                                                        e_min=0.05,
+                                                                        e_min=0.005,
                                                                         redistribute_all=True,
-                                                                        redistribute_weighted=True,),item="hits")
+                                                                        redistribute_weighted=True,
+                                                                        attach_clusters=False,),item="hits")
     
     drop_satellites = fl.map(lambda h: drop_hits_satellites_xy_z_variable(h,
                                                                         5*units.pes,
@@ -143,7 +144,8 @@ def zaira(
                                                                         thr_percentile=40,
                                                                         n_neigh_thr=5,
                                                                         redistribute_weighted=True,
-                                                                        redistribute_all=True), item='hits')
+                                                                        redistribute_all=True,
+                                                                        redistribute_to_nearest_cluster=True), item='hits')
     
     # spy components
     event_count_in = fl.spy_count()
