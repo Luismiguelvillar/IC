@@ -163,7 +163,7 @@ def blob_center_zaira(track_graph: Graph,
 
     ball, distances_to_center = geodesic_ball(center, R, dist)
     hits_blob = hits_around_blob(track_graph,
-                                 radius=R*units.mm, # NOTE Quiza sea bueno tocar aqui para agarrar mas energia NOTE NOTE TODO TODO
+                                 radius=R, # NOTE Quiza sea bueno tocar aqui para agarrar mas energia NOTE NOTE TODO TODO
                                  extreme=center,
                                  dist=dist)
 

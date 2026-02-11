@@ -141,11 +141,10 @@ def zaira(
     drop_satellites = fl.map(lambda h: drop_hits_satellites_xy_z_variable(h,
                                                                         5*units.pes,
                                                                         22*units.mm,
-                                                                        thr_percentile=40,
-                                                                        n_neigh_thr=5,
+                                                                        thr_percentile=75,
+                                                                        n_neigh_thr=4,
                                                                         redistribute_weighted=True,
-                                                                        redistribute_all=True,
-                                                                        redistribute_to_nearest_cluster=True), item='hits')
+                                                                        redistribute_all=True), item='hits')
     
     # spy components
     event_count_in = fl.spy_count()

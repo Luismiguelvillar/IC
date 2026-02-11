@@ -486,36 +486,10 @@ def _drop_hits_numba(Es, indptr, indices, e_thr_eff, n_neigh_thr,
                 if alive[j]:
                     n_neigh += 1
 
-            # caso 1: aislado -> elimina y reparte
+            # caso 1: aislado -> elimina (no hay vecinos para redistribuir)
             if n_neigh == 0:
-                Ei = Es[idx]
                 alive[idx] = False
                 Es[idx] = 0.0
-
-                if redistribute_all:
-                    if redistribute_weighted:
-                        # suma energía viva actual (sin idx)
-                        suma = 0.0
-                        for j in range(n):
-                            if alive[j]:
-                                suma += Es[j]
-
-                        if suma > 0.0 and Ei != 0.0:
-                            for j in range(n):
-                                if alive[j]:
-                                    Ej = Es[j]
-                                    Es[j] = Ej + (Ej / suma) * Ei
-                    else:
-                        # reparto equitativo entre vivos
-                        n_alive = 0
-                        for j in range(n):
-                            if alive[j]:
-                                n_alive += 1
-                        if n_alive > 0 and Ei != 0.0:
-                            share = Ei / n_alive
-                            for j in range(n):
-                                if alive[j]:
-                                    Es[j] += share
 
                 modified = True
                 continue
@@ -524,36 +498,39 @@ def _drop_hits_numba(Es, indptr, indices, e_thr_eff, n_neigh_thr,
             if Es[idx] >= e_thr_eff:
                 continue
 
-            # caso 3: pocos vecinos -> elimina y reparte a TODOS los vivos
+            # caso 3: pocos vecinos -> elimina y reparte SOLO a vecinos vivos
             if n_neigh < n_neigh_thr:
                 Ei = Es[idx]
                 alive[idx] = False
                 Es[idx] = 0.0
 
-                if redistribute_all:
+                if redistribute_all and Ei != 0.0:
                     if redistribute_weighted:
-                        # suma energía viva actual (sin idx)
+                        # suma energía de vecinos vivos
                         suma = 0.0
-                        for j in range(n):
+                        for kk in range(start, end):
+                            j = indices[kk]
                             if alive[j]:
                                 suma += Es[j]
 
-                        if suma > 0.0 and Ei != 0.0:
-                            for j in range(n):
+                        if suma > 0.0:
+                            for kk in range(start, end):
+                                j = indices[kk]
                                 if alive[j]:
                                     Ej = Es[j]
                                     Es[j] = Ej + (Ej / suma) * Ei
-                    else:
-                        # reparto equitativo entre vivos
-                        n_alive = 0
-                        for j in range(n):
-                            if alive[j]:
-                                n_alive += 1
-                        if n_alive > 0 and Ei != 0.0:
-                            share = Ei / n_alive
-                            for j in range(n):
+                        else:
+                            share = Ei / n_neigh
+                            for kk in range(start, end):
+                                j = indices[kk]
                                 if alive[j]:
                                     Es[j] += share
+                    else:
+                        share = Ei / n_neigh
+                        for kk in range(start, end):
+                            j = indices[kk]
+                            if alive[j]:
+                                Es[j] += share
 
                 modified = True
 
@@ -562,9 +539,7 @@ def _drop_hits_numba(Es, indptr, indices, e_thr_eff, n_neigh_thr,
 
 def drop_hits_satellites_xy_z_variable(hitc, e_thr, r_iso, thr_percentile=40, n_neigh_thr=4,
                                        redistribute_all=True,
-                                       redistribute_weighted=False,
-                                       redistribute_to_nearest_cluster=False,
-                                       clusters=None):
+                                       redistribute_weighted=False):
     hits = list(hitc.hits)
     zscale = 15.55 / 3.97
     if not hits:
@@ -577,7 +552,6 @@ def drop_hits_satellites_xy_z_variable(hitc, e_thr, r_iso, thr_percentile=40, n_
     Es = np.fromiter((h.Ep for h in hits), dtype=np.float64, count=n)
     # Replace non-finite energies to avoid NaN propagation in the Numba loop.
     Es = np.where(np.isfinite(Es), Es, 0.0)
-    total_energy = float(np.sum(Es))
 
     Es_pos = Es[np.isfinite(Es) & (Es > 0)]
     e_thr_eff = float(np.percentile(Es_pos, thr_percentile)) if Es_pos.size else float(e_thr)
@@ -610,69 +584,14 @@ def drop_hits_satellites_xy_z_variable(hitc, e_thr, r_iso, thr_percentile=40, n_
             k += 1
 
     # Numba core
-    redistribute_in_numba = redistribute_all and (not redistribute_to_nearest_cluster)
-    Es_in = Es.copy()
-    alive, Es_out = _drop_hits_numba(Es_in.copy(), indptr, indices, e_thr_eff, n_neigh_thr,
-                                     redistribute_in_numba, redistribute_weighted)
+    alive, Es_out = _drop_hits_numba(Es.copy(), indptr, indices, e_thr_eff, n_neigh_thr,
+                                     redistribute_all, redistribute_weighted)
 
-    # Optional: redistribute removed energy within the original cluster
-    if redistribute_all and redistribute_to_nearest_cluster:
-        if clusters is None:
-            clusters = getattr(hitc, "satellite_clusters", None)
-        if clusters is None:
-            pairs = tree.query_pairs(r_iso)
-            g = nx.Graph()
-            g.add_nodes_from(range(n))
-            g.add_edges_from(pairs)
-            clusters = list(nx.connected_components(g))
-
-        cluster_id = np.full(n, -1, dtype=np.int64)
-        cluster_members = []
-        for cid, comp in enumerate(clusters):
-            idx = np.fromiter(comp, dtype=np.int64)
-            cluster_id[idx] = cid
-            cluster_members.append(idx)
-
-        cluster_alive_members = []
-        for members in cluster_members:
-            if members.size == 0:
-                cluster_alive_members.append(members)
-            else:
-                cluster_alive_members.append(members[alive[members]])
-
-        removed_idx = np.where(~alive)[0]
-        for i in removed_idx:
-            Ei = float(Es_in[i])
-            if Ei == 0.0:
-                continue
-            cid = cluster_id[i]
-            if cid < 0:
-                continue
-            members = cluster_alive_members[cid]
-            if members.size == 0:
-                continue
-            if redistribute_weighted:
-                weights = Es_out[members].copy()
-                wsum = float(np.nansum(weights))
-                if wsum > 0.0:
-                    Es_out[members] = Es_out[members] + (weights / wsum) * Ei
-                else:
-                    share = Ei / members.size
-                    Es_out[members] = Es_out[members] + share
-            else:
-                share = Ei / members.size
-                Es_out[members] = Es_out[members] + share
-
-    # If redistribution is enabled, enforce energy conservation across remaining hits.
-    if redistribute_all and total_energy > 0.0:
-        sum_alive = float(np.sum(Es_out[alive]))
-        if sum_alive > 0.0:
-            scale = total_energy / sum_alive
-            Es_out[alive] *= scale
-
-    # escribir energías de vuelta a objetos
+    # Keep corrected energy in sync with Ep after satellite suppression.
     for h, E_new in zip(hits, Es_out):
-        h.Ep = float(E_new)
+        e_new = float(E_new)
+        h.Ep = e_new
+        h.Ec = e_new
 
     filtered_hits = [h for h, keep in zip(hits, alive) if keep]
     return HitCollection(event_number=hitc.event, event_time=-1, hits=filtered_hits)
@@ -773,9 +692,11 @@ def drop_satellite_clusters(hitc, r_iso, *,
                 share = e_removed / len(kept)
                 Es[kept] = Es[kept] + share
 
-    # Write back Ep and filter
+    # Keep corrected energy in sync with Ep after cluster suppression.
     for i, h in enumerate(hits):
-        h.Ep = float(Es[i])
+        e_new = float(Es[i])
+        h.Ep = e_new
+        h.Ec = e_new
     filtered_hits = [h for i, h in enumerate(hits) if i in keep]
     out = HitCollection(event_number=hitc.event, event_time=-1, hits=filtered_hits)
 
