@@ -47,6 +47,7 @@ from ..reco.hits_functions import cut_over_Q
 from ..reco.hits_functions import drop_isolated
 from ..reco.hits_functions import drop_hits_satellites_xy_z_variable
 from ..reco.hits_functions import drop_satellite_clusters
+from ..reco.hits_functions import trimming_tdst
 
 from ..io.run_and_event_io import run_and_event_writer
 from ..io.hits_io import hits_writer
@@ -205,6 +206,7 @@ def zaira(
             hit_type=HitEnergy.Ec,
             filter_hits_table_name="high_th_select",
             hits_writer=hits_writer_effect,
+            topology_info_postprocess=trimming_tdst,
         )
 
         result = push(
@@ -219,7 +221,7 @@ def zaira(
                 #drop_sensors, # NOTE
                 df_to_hitc,              # back to HitCollection for topology
                 copy_ep,
-                drop_satellites_cluster,
+                #drop_satellites_cluster,
                 drop_satellites, # NOTE este es el mio!
                 event_count_post_cuts.spy,
                 fl.fork(

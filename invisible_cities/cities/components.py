@@ -1600,7 +1600,7 @@ def hitc_to_df(hitc: HitCollection):
 
 def compute_and_write_tracks_info(paolina_params, h5out,
                                   hit_type, filter_hits_table_name,
-                                  hits_writer):
+                                  hits_writer, topology_info_postprocess=None):
 
     filter_events_nohits = fl.map(lambda x : len(x.hits) > 0,
                                       args = 'hits',
@@ -1618,6 +1618,13 @@ def compute_and_write_tracks_info(paolina_params, h5out,
                                             out  = ('topology_info', 'paolina_hits', 'out_of_map'))
 
     sort_hits_ = fl.map(sort_hits, item="paolina_hits")
+
+    if topology_info_postprocess is None:
+        process_topology_info = identity
+    else:
+        process_topology_info = fl.map(topology_info_postprocess,
+                                       args='topology_info',
+                                       out='topology_info')
 
     # Filter empty topology events
     filter_events_topology         = fl.map(lambda x : len(x) > 0,
@@ -1654,6 +1661,7 @@ def compute_and_write_tracks_info(paolina_params, h5out,
                , hits_passed.filter
                , copy_Efield
                , create_extract_track_blob_info
+               , process_topology_info
                , sort_hits_
                , filter_events_topology
                , fl.fork(*fork_pipes)

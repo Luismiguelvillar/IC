@@ -714,3 +714,40 @@ def drop_satellite_clusters(hitc, r_iso, *,
         out.satellite_clusters = clusters_out
     
     return out
+
+def trimming_tdst(tdst, e_thresh_sat=0.02, verbose=False):
+    """
+    Remove low-energy tracks from topology information.
+
+    Parameters
+    ----------
+    tdst : pd.DataFrame
+        Per-track topology dataframe (typically Tracking/Tracks schema).
+    e_thresh_sat : float, optional
+        Minimum track energy to keep.
+
+    Returns
+    -------
+    pd.DataFrame
+        Filtered topology dataframe with updated ``numb_of_tracks`` per event.
+    """
+    required_cols = {"event", "trackID", "energy"}
+    if tdst is None or len(tdst) == 0:
+        return tdst
+    if not required_cols.issubset(tdst.columns):
+        return tdst
+
+    len_before = len(tdst)
+    tdst = tdst[tdst["energy"] >= e_thresh_sat].copy()
+    len_after = len(tdst)
+
+    if len_after:
+        ntrks = tdst.groupby("event")["trackID"].transform("nunique")
+        if "numb_of_tracks" in tdst.columns:
+            tdst["numb_of_tracks"] = ntrks.astype(tdst["numb_of_tracks"].dtype, copy=False)
+        else:
+            tdst["numb_of_tracks"] = ntrks
+
+    if verbose:
+        print(f"Trimming TDST: {len_before} tracks before, {len_after} tracks after (threshold: {e_thresh_sat} MeV)")
+    return tdst
